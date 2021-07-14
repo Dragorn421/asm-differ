@@ -236,6 +236,12 @@ if __name__ == "__main__":
         default=1024,
         help="The maximum length of the diff, in lines.",
     )
+    parser.add_argument(
+        "--viewer",
+        dest="viewer",
+        action="store_true",
+        help="Do not diff, just view.",
+    )
 
     # Project-specific flags, e.g. different versions/make arguments.
     add_custom_arguments_fn = getattr(diff_settings, "add_custom_arguments", None)
@@ -313,6 +319,7 @@ class Config:
     ignore_large_imms: bool
     ignore_addr_diffs: bool
     algorithm: str
+    viewer: bool
 
 
 def create_project_settings(settings: Dict[str, Any]) -> ProjectSettings:
@@ -356,6 +363,7 @@ def create_config(args: argparse.Namespace, project: ProjectSettings) -> Config:
         ignore_large_imms=args.ignore_large_imms,
         ignore_addr_diffs=args.ignore_addr_diffs,
         algorithm=args.algorithm,
+        viewer=args.viewer,
     )
 
 
@@ -474,7 +482,7 @@ def maybe_get_objdump_source_flags(config: Config) -> List[str]:
 
     flags = [
         "--source",
-        "--source-comment=│ ",
+        #"--source-comment=│ ",
         "-l",
     ]
 
@@ -626,7 +634,7 @@ def dump_objfile(
         fail(f"Not able to find .o file for function: {objfile} is not a file.")
 
     refobjfile = "expected/" + objfile
-    if not os.path.isfile(refobjfile):
+    if not config.viewer and not os.path.isfile(refobjfile):
         fail(f'Please ensure an OK .o file exists at "{refobjfile}".')
 
     objdump_flags = ["-drz"]
@@ -1009,10 +1017,6 @@ def process(lines: List[str], config: Config) -> List[Line]:
         if config.diff_obj and (">:" in row or not row):
             continue
 
-        if config.source and (row and row[0] != " "):
-            source_lines.append(row)
-            continue
-
         if "R_AARCH64_" in row:
             # TODO: handle relocation
             continue
@@ -1028,6 +1032,10 @@ def process(lines: List[str], config: Config) -> List[Line]:
         if "R_PPC_" in row:
             new_original = process_ppc_reloc(row, output[-1].original)
             output[-1] = replace(output[-1], original=new_original)
+            continue
+
+        if config.source and (row and not re.match(r"^ [0-9a-f]+:\t", row)):
+            source_lines.append(row)
             continue
 
         m_comment = re.search(arch.re_comment, row)
@@ -1458,6 +1466,13 @@ def format_diff(
             + (old.fmt2 or "-" if old != new else "")
             for (base, old, new) in output
         ]
+    elif config.viewer:
+        header_line = ""
+        diff_lines = [
+            new.fmt2
+            for (base, old, new) in output
+            if new.key2 is not None
+        ]
     else:
         header_line = ""
         diff_lines = [
@@ -1564,6 +1579,11 @@ class Display:
     def run_less(self) -> "Tuple[subprocess.Popen[bytes], subprocess.Popen[bytes]]":
         if self.emsg is not None:
             output = self.emsg
+        elif self.config.viewer:
+            diff_output = do_diff(self.mydump, self.mydump, self.config)
+            header, diff_lines = format_diff(diff_output, diff_output, self.config)
+            header_lines = [header] if header else []
+            output = "\n".join(header_lines + diff_lines[self.config.skip_lines :])
         else:
             diff_output = do_diff(self.basedump, self.mydump, self.config)
             last_diff_output = self.last_diff_output or diff_output
@@ -1674,6 +1694,9 @@ def main() -> None:
         except ModuleNotFoundError as e:
             fail(MISSING_PREREQUISITES.format(e.name))
 
+    if config.viewer and config.threeway:
+        fail(f"--viewer can't be used with threeway")
+
     if config.threeway and not args.watch:
         fail("Threeway diffing requires -w.")
 
@@ -1695,11 +1718,14 @@ def main() -> None:
         print(f"Wrote assembly to {args.write_asm}.")
         sys.exit(0)
 
-    if args.base_asm is not None:
-        with open(args.base_asm) as f:
-            basedump = f.read()
+    if config.viewer:
+        basedump = None
     else:
-        basedump = run_objdump(basecmd, config, project)
+        if args.base_asm is not None:
+            with open(args.base_asm) as f:
+                basedump = f.read()
+        else:
+            basedump = run_objdump(basecmd, config, project)
 
     mydump = run_objdump(mycmd, config, project)
 
