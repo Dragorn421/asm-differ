@@ -237,6 +237,19 @@ if __name__ == "__main__":
         help="The maximum length of the diff, in lines.",
     )
     parser.add_argument(
+        "--start-offset",
+        dest="start_offset",
+        type=int,
+        help="Sets the offset of the first line.",
+    )
+    parser.add_argument(
+        "-0",
+        "--start-offset-zero",
+        dest="start_offset_zero",
+        action="store_true",
+        help="Sets the offset of the first line to 0.",
+    )
+    parser.add_argument(
         "--viewer",
         dest="viewer",
         action="store_true",
@@ -319,6 +332,7 @@ class Config:
     ignore_large_imms: bool
     ignore_addr_diffs: bool
     algorithm: str
+    first_offset: Optional[int]
     viewer: bool
 
 
@@ -363,6 +377,7 @@ def create_config(args: argparse.Namespace, project: ProjectSettings) -> Config:
         ignore_large_imms=args.ignore_large_imms,
         ignore_addr_diffs=args.ignore_addr_diffs,
         algorithm=args.algorithm,
+        first_offset=0 if args.start_offset_zero else args.start_offset,
         viewer=args.viewer,
     )
 
@@ -1099,6 +1114,17 @@ def process(lines: List[str], config: Config) -> List[Line]:
         elif stop_after_delay_slot:
             break
 
+    if config.first_offset is not None and output:
+        line_num_min = eval_line_num(output[0].line_num)
+        line_num_max = eval_line_num(output[-1].line_num)
+        line_num_offset = config.first_offset - line_num_min
+        line_num_width = len(f"{line_num_max:x}")
+        line_num_format = f"{{:0{line_num_width}x}}:"
+        for line in output:
+            line_num_int = eval_line_num(line.line_num)
+            line_num_int += line_num_offset
+            line.line_num = line_num_format.format(line_num_int)
+
     return output
 
 
@@ -1675,6 +1701,9 @@ class Display:
 def main() -> None:
     args = parser.parse_args()
 
+    if args.start_offset is not None and args.start_offset_zero:
+        fail("--start-offset can't be used with --start-offset-zero")
+
     # Apply project-specific configuration.
     settings: Dict[str, Any] = {}
     diff_settings.apply(settings, args)  # type: ignore
@@ -1695,7 +1724,7 @@ def main() -> None:
             fail(MISSING_PREREQUISITES.format(e.name))
 
     if config.viewer and config.threeway:
-        fail(f"--viewer can't be used with threeway")
+        fail("--viewer can't be used with threeway")
 
     if config.threeway and not args.watch:
         fail("Threeway diffing requires -w.")
